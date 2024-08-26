@@ -123,8 +123,9 @@ CHANGE REPLICATION SOURCE TO SOURCE_HOST = '192.168.56.150', SOURCE_PORT = 3306,
 START REPLICA;
 SHOW REPLICA STATUS\G
 ```
-Репликация настроена успешно:
-![status](img/status.jpg)
+Репликация настроена успешно:  
+![status](img/status.jpg)  
+  
 Внесем изменени на *master* и убедимся, что они успешно реплицируются на **slave**:
 ```
 mysql> USE bet;

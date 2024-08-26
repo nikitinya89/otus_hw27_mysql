@@ -1,0 +1,177 @@
+- name: Configure mysql
+  hosts: all
+  become: true
+  vars:
+    root_password: "Qwerty123!"
+    repl_password: "Qwerty123!!"
+  tasks:
+
+    - name: Download percona repo
+      get_url:
+        url: https://repo.percona.com/apt/percona-release_latest.generic_all.deb
+        dest: /home/vagrant/
+
+    - name: Install packages
+      apt:
+        name:
+          - gnupg2
+          - python3-pip
+        update_cache: true
+
+    - name: Install PyMySQL
+      pip:
+        name: PyMySQL
+
+    - name: Install repo
+      apt:
+        deb: /home/vagrant/percona-release_latest.generic_all.deb
+
+    - name:
+      shell: percona-release setup ps80
+
+    - name: Install percona server
+      apt:
+        name: percona-server-server
+        state: present
+        update_cache: true
+
+    - name: Delete default conf
+      file:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        state: absent
+
+    - name: Create folder for logs
+      file:
+        name: /vqr/log/mysql
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: 0644
+
+    - name: Copy config files
+      template:
+        src: "{{ item }}.j2"
+        dest: "/etc/mysql/mysql.conf.d/{{ item }}"
+        owner: root
+        group: root
+        mode: 0644
+      with_items:
+        - 01-base.cnf
+        - 02-max-connections.cnf
+        - 03-performance.cnf
+        - 04-slow-query.cnf
+        - 05-binlog.cnf
+
+    - name: Generating .my.cnf file on Master
+      shell: "echo \"[mysql]\nuser='root'\npassword='{{ root_password }}'\n\" > /root/.my.cnf"
+      args:
+        creates: /root/.my.cnf
+
+    - name: Setting up root password on MySQL service
+      mysql_user:
+        name: root
+        host: localhost
+        password: "{{ root_password }}"
+        login_user: root
+        login_password: "{{ root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        state: present
+
+    - name: Restart MySQL
+      systemd:
+        name: mysql
+        state: restarted
+
+    - name: Create db
+      mysql_db:
+        name: bet
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        login_user: root
+        login_password: "{{ root_password }}"
+      when: 'ansible_hostname == "master"'
+
+    - name: Copy db dump file
+      copy:
+        src: bet.dmp
+        dest: /tmp/
+      when: 'ansible_hostname == "master"'
+
+    - name: Loading dump to master
+      mysql_db:
+        login_user: root
+        login_password: "{{ root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        name: bet
+        state: import
+        target: /tmp/bet.dmp
+      when: 'ansible_hostname == "master"'
+
+    - name: Create user for replication
+      mysql_user:
+        name: repl
+        host: '%'
+        password: "{{ repl_password }}"
+        login_user: root
+        login_password: "{{ root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        state: present
+        priv: '*.*:REPLICATION SLAVE'
+      when: 'ansible_hostname == "master"'
+
+    - name: Creating new dump
+      shell: mysqldump --all-databases --add-drop-table --create-options --disable-keys \
+                       --extended-insert --single-transaction --quick --events --routines \
+                       --triggers --source-data=0 --skip-lock-tables --flush-privileges \
+                       --ignore-table=bet.events_on_demand --ignore-table=bet.v_same_event \
+                       -u root -p{{ root_password }} > /home/vagrant/master.sql
+      args:
+        creates: /home/vagrant/master.sql
+      when: 'ansible_hostname == "master"'
+
+    - name: Copy dump file from master
+      fetch:
+        src: /home/vagrant/master.sql
+        dest: files/master.sql
+        flat: true
+      when: 'ansible_hostname == "master"'
+
+    - name: Copy dump to slave
+      copy:
+        src: files/master.sql
+        dest: /tmp/master.sql
+      when: 'ansible_hostname == "slave"'
+
+    - name: Loading dump to slave
+      mysql_db:
+        login_user: root
+        login_password: "{{ root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        name: bet
+        state: import
+        target: /tmp/master.sql
+      when: 'ansible_hostname == "slave"'
+      tags: replication, restore
+
+    - name: Configure replication on slave
+      mysql_replication:
+        mode: changeprimary
+        primary_host: 192.168.56.150
+        primary_port: 3306
+        primary_user: repl
+        primary_password: "{{ repl_password }}"
+        primary_auto_position: true
+        login_user: root
+        login_password: "{{ root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      when: 'ansible_hostname == "slave"'
+      tags: replication
+
+    - name: Start replication
+      mysql_replication:
+        mode: startreplica
+        login_user: root
+        login_password: "{{ root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      when: 'ansible_hostname == "slave"'
+      tags: replication

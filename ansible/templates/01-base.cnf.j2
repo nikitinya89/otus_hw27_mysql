@@ -1,0 +1,10 @@
+[mysqld]
+pid-file=/var/run/mysqld/mysqld.pid
+log-error=/var/log/mysql/mysqld.log
+datadir=/var/lib/mysql
+socket=/var/run/mysqld/mysqld.sock
+symbolic-links=0
+
+server-id = {{ server_id }}
+innodb_file_per_table = 1
+skip-name-resolve
